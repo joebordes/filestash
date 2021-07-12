@@ -3,7 +3,7 @@ import PropTypes from 'prop-types';
 
 import { NgIf, Icon, Button } from '../../components/';
 import { Share } from '../../model/';
-import { randomString, notify, absoluteToRelative, copyToClipboard, filetype } from '../../helpers/';
+import { randomString, notify, absoluteToRelative, copyToClipboard, filetype, getMimeType } from '../../helpers/';
 import { t } from '../../locales/';
 import './share.scss';
 
@@ -100,7 +100,7 @@ export class ShareComponent extends React.Component {
 
     sendToTiddlyWiki(ev, eventprops, link){
         var tiddlerData = [
-            {title: eventprops.path, type: eventprops.type, _canonical_uri: window.location.origin+'/api/files/cat?path='+eventprops.path+'&share='+link.id},
+            {title: eventprops.path, type: getMimeType(eventprops.path), _canonical_uri: window.location.origin+'/api/files/cat?path='+eventprops.path+'&share='+link.id},
         ];
         ev.dataTransfer.setData("URL","data:text/vnd.tiddler," + encodeURIComponent(JSON.stringify(tiddlerData)));
         ev.stopPropagation();
