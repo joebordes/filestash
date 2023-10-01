@@ -3,7 +3,6 @@ package model
 import (
 	"fmt"
 	. "github.com/mickael-kerjean/filestash/server/common"
-	_ "github.com/mickael-kerjean/filestash/server/model/backend"
 	"strings"
 )
 
@@ -12,7 +11,7 @@ func NewBackend(ctx *App, conn map[string]string) (IBackend, error) {
 		// by default, a hacker could use filestash to establish connections outside of what's
 		// define in the config file. We need to prevent this
 		possibilities := make([]map[string]interface{}, 0)
-		for i:=0; i< len(Config.Conn); i++ {
+		for i := 0; i < len(Config.Conn); i++ {
 			d := Config.Conn[i]
 			if d["type"] != conn["type"] {
 				continue
@@ -52,6 +51,9 @@ func NewBackend(ctx *App, conn map[string]string) (IBackend, error) {
 }
 
 func GetHome(b IBackend, base string) (string, error) {
+	if strings.TrimSpace(base) == "" {
+		base = "/"
+	}
 	home := "/"
 	if obj, ok := b.(interface{ Home() (string, error) }); ok {
 		tmp, err := obj.Home()
@@ -71,12 +73,12 @@ func GetHome(b IBackend, base string) (string, error) {
 }
 
 func MapStringInterfaceToMapStringString(m map[string]interface{}) map[string]string {
-    res := make(map[string]string)
-    for key, value := range m {
+	res := make(map[string]string)
+	for key, value := range m {
 		res[key] = fmt.Sprintf("%v", value)
 		if res[key] == "<nil>" {
 			res[key] = ""
 		}
-    }
+	}
 	return res
 }

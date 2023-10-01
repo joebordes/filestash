@@ -10,52 +10,60 @@ import (
 	"strings"
 )
 
-func ShareList(ctx App, res http.ResponseWriter, req *http.Request) {
+func ShareList(ctx *App, res http.ResponseWriter, req *http.Request) {
 	path, err := PathBuilder(ctx, req.URL.Query().Get("path"))
 	if err != nil {
 		SendErrorResult(res, err)
 		return
 	}
 	listOfSharedLinks, err := model.ShareList(
-		GenerateID(&ctx),
+		GenerateID(ctx),
 		path,
 	)
 	if err != nil {
+		Log.Debug("share::list '%s'", err.Error())
 		SendErrorResult(res, err)
 		return
 	}
 
-	for i:=0; i<len(listOfSharedLinks); i++ {
+	for i := 0; i < len(listOfSharedLinks); i++ {
 		listOfSharedLinks[i].Path = "/" + strings.TrimPrefix(listOfSharedLinks[i].Path, path)
 	}
 	SendSuccessResults(res, listOfSharedLinks)
 }
 
-func ShareUpsert(ctx App, res http.ResponseWriter, req *http.Request) {
+func ShareUpsert(ctx *App, res http.ResponseWriter, req *http.Request) {
 	share_id := mux.Vars(req)["share"]
 	if share_id == "private" {
+		Log.Debug("share::upsert 'private'")
 		SendErrorResult(res, ErrNotValid)
 		return
 	}
 	s := Share{
-		Id:   share_id,
+		Id: share_id,
 		Auth: func() string {
 			if ctx.Share.Id == "" {
-				a, err := req.Cookie(COOKIE_NAME_AUTH)
-				if err != nil {
-					return ""
-				}				
-				return a.Value
+				str := ""
+				index := 0
+				for {
+					cookie, err := req.Cookie(CookieName(index))
+					if err != nil {
+						break
+					}
+					index++
+					str += cookie.Value
+				}
+				return str
 			}
 			return ctx.Share.Auth
 		}(),
-		Backend: func () string {
+		Backend: func() string {
 			if ctx.Share.Id == "" {
-				return GenerateID(&ctx)
+				return GenerateID(ctx)
 			}
 			return ctx.Share.Backend
 		}(),
-	    Path: func () string {
+		Path: func() string {
 			leftPath := "/"
 			rightPath := strings.TrimPrefix(NewStringFromInterface(ctx.Body["path"]), "/")
 			if ctx.Share.Id != "" {
@@ -78,22 +86,24 @@ func ShareUpsert(ctx App, res http.ResponseWriter, req *http.Request) {
 		CanUpload:    NewBoolFromInterface(ctx.Body["can_upload"]),
 	}
 	if err := model.ShareUpsert(&s); err != nil {
+		Log.Debug("share::upsert '%s'", err.Error())
 		SendErrorResult(res, err)
 		return
 	}
 	SendSuccessResult(res, nil)
 }
 
-func ShareDelete(ctx App, res http.ResponseWriter, req *http.Request) {
+func ShareDelete(ctx *App, res http.ResponseWriter, req *http.Request) {
 	share_target := mux.Vars(req)["share"]
 	if err := model.ShareDelete(share_target); err != nil {
+		Log.Debug("share::delete '%s'", err.Error())
 		SendErrorResult(res, err)
 		return
 	}
 	SendSuccessResult(res, nil)
 }
 
-func ShareVerifyProof(ctx App, res http.ResponseWriter, req *http.Request) {
+func ShareVerifyProof(ctx *App, res http.ResponseWriter, req *http.Request) {
 	var submittedProof model.Proof
 	var verifiedProof []model.Proof
 	var requiredProof []model.Proof
@@ -103,13 +113,14 @@ func ShareVerifyProof(ctx App, res http.ResponseWriter, req *http.Request) {
 
 	// 1) initialise the current context
 	share_id := mux.Vars(req)["share"]
-	s, err = model.ShareGet(share_id);
+	s, err = model.ShareGet(share_id)
 	if err != nil {
+		Log.Debug("share::verify::init '%s'", err.Error())
 		SendErrorResult(res, err)
 		return
 	}
 	submittedProof = model.Proof{
-		Key: fmt.Sprint(ctx.Body["type"]),
+		Key:   fmt.Sprint(ctx.Body["type"]),
 		Value: fmt.Sprint(ctx.Body["value"]),
 	}
 	verifiedProof = model.ShareProofGetAlreadyVerified(req)
@@ -123,17 +134,20 @@ func ShareVerifyProof(ctx App, res http.ResponseWriter, req *http.Request) {
 			MaxAge: -1,
 			Path:   COOKIE_PATH,
 		})
+		Log.Debug("share::verify::validate 'proof issue' len(verifiedProof)[%d] len(requiredProof)[%d]", len(verifiedProof), len(requiredProof))
 		SendErrorResult(res, ErrNotValid)
 		return
 	}
 	if err := s.IsValid(); err != nil {
+		Log.Debug("share::verify::validate '%s'", err.Error())
 		SendErrorResult(res, err)
 		return
 	}
 
 	// 3) process the proof sent by the user
-	submittedProof, err = model.ShareProofVerifier(s, submittedProof);
+	submittedProof, err = model.ShareProofVerifier(s, submittedProof)
 	if err != nil {
+		Log.Debug("share::verify::process '%s'", err.Error())
 		submittedProof.Error = NewString(err.Error())
 		SendSuccessResult(res, submittedProof)
 		return
@@ -146,8 +160,17 @@ func ShareVerifyProof(ctx App, res http.ResponseWriter, req *http.Request) {
 	}
 
 	if submittedProof.Key != "" {
-		submittedProof.Id = Hash(submittedProof.Key + "::" + submittedProof.Value, 20)
-		verifiedProof = append(verifiedProof, submittedProof)
+		submittedProof.Id = Hash(submittedProof.Key+"::"+submittedProof.Value, 20)
+		alreadyExist := false
+		for i := 0; i < len(verifiedProof); i++ {
+			if verifiedProof[i].Id == submittedProof.Id {
+				alreadyExist = true
+				break
+			}
+		}
+		if alreadyExist == false {
+			verifiedProof = append(verifiedProof, submittedProof)
+		}
 	}
 
 	// 4) Find remaining proofs: requiredProof - verifiedProof
@@ -161,10 +184,11 @@ func ShareVerifyProof(ctx App, res http.ResponseWriter, req *http.Request) {
 			str, _ := EncryptString(SECRET_KEY_DERIVATE_FOR_PROOF, string(j))
 			return str
 		}(verifiedProof),
-		Path: COOKIE_PATH,
-		MaxAge: 60 * 60 * 24 * 30,
+		Path:     COOKIE_PATH,
+		MaxAge:   60 * 60 * 24 * 30,
 		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
+		SameSite: http.SameSiteNoneMode,
+		Secure:   true,
 	}
 	http.SetCookie(res, &cookie)
 
@@ -174,10 +198,16 @@ func ShareVerifyProof(ctx App, res http.ResponseWriter, req *http.Request) {
 	}
 
 	SendSuccessResult(res, struct {
-		Id string   `json:"id"`
-		Path string `json:"path"`
+		Id        string `json:"id"`
+		Path      string `json:"path"`
+		CanRead   bool   `json:"can_read"`
+		CanWrite  bool   `json:"can_write"`
+		CanUpload bool   `json:"can_upload"`
 	}{
-		Id: s.Id,
-		Path: s.Path,
+		Id:        s.Id,
+		Path:      s.Path,
+		CanRead:   s.CanRead,
+		CanWrite:  s.CanWrite,
+		CanUpload: s.CanUpload,
 	})
 }

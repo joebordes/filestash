@@ -1,78 +1,82 @@
-import React from 'react';
-import { FormBuilder } from '../../components/';
-import { Config } from '../../model/';
-import { format, notify }  from '../../helpers';
-import { t } from '../../locales/';
+import React, { useState, useEffect } from "react";
+import { FormBuilder } from "../../components/";
+import { Config } from "../../model/";
+import { notify, nop } from "../../helpers";
+import { t } from "../../locales/";
 
-export class SettingsPage extends React.Component {
-    constructor(props){
-        super(props);
-        this.state = {
-            form: {}
-        };
-    }
-
-    componentDidMount(){
-        Config.all().then((c) => {
-            delete c.constant; // The constant key contains read only global variable that are
-                               // application wide truth => not editable from the admin area
-            this.setState({form: c});
-        });
-    }
-
-    format(name){
-        if(typeof name !== "string"){
+export function SettingsPage({ isSaving = nop }) {
+    const [form, setForm] = useState({});
+    const format = (name) => {
+        if (typeof name !== "string") {
             return "N/A";
         }
         return name
             .split("_")
             .map((word) => {
-                if(word.length < 1){
+                if (word.length < 1) {
                     return word;
                 }
                 return word[0].toUpperCase() + word.substring(1);
             })
             .join(" ");
-    }
-
-    onChange(form){
-        form.connections = window.CONFIG.connections;
-        this.props.isSaving(true);
-        Config.save(form, true, () => {
-            this.props.isSaving(false);
+    };
+    const onChange = (_form) => {
+        _form.connections = window.CONFIG.connections;
+        delete _form.constant;
+        refresh(Date.now());
+        isSaving(true);
+        Config.save(_form, true, () => {
+            isSaving(false);
         }, (err) => {
-            notify.send(err && err.message || t('Oops'), 'error');
-            this.props.isSaving(false);
+            isSaving(false);
+            notify.send(err && err.message || t("Oops"), "error");
         });
-    }
+    };
+    const refresh = useState(null)[1];
 
-    render(){
-        return (
-            <form className="sticky">
-                <FormBuilder form={this.state.form} 
-                             onChange={this.onChange.bind(this)} 
-                             autoComplete="new-password"
-                             render={ ($input, props, struct, onChange) => {
-                    return (
-                        <label className={"no-select input_type_" + props.params["type"]}>
-                          <div>
-                            <span>
-                              { format(struct.label) }:
-                            </span>
-                            <div style={{width: '100%'}}>
-                              { $input }
-                            </div>
-                          </div>
-                          <div>
-                            <span className="nothing"></span>
-                            <div style={{width: '100%'}}>
-                              { struct.description ? (<div className="description">{struct.description}</div>) : null }
-                            </div>
-                          </div>
-                        </label>
-                    );
-                }}/>
+    useEffect(() => {
+        Config.all().then((c) => {
+            // The constant key contains read only global variable that are
+            // application wide truth => not editable from the admin area
+            delete c.constant;
+            delete c.middleware;
+            setForm(c);
+        });
+        return () => {
+            Config.clear();
+            isSaving(false);
+        };
+    }, []);
+
+    const renderForm = ($input, props, struct, onChange) => (
+        <label className={"no-select input_type_" + props.params["type"]}>
+            <div>
+                <span>
+                    { format(struct.label) }:
+                </span>
+                <div style={{ width: "100%" }}>
+                    { $input }
+                </div>
+            </div>
+            <div>
+                <span className="nothing"></span>
+                <div style={{ width: "100%" }}>
+                    { struct.description && (
+                        <div className="description">{struct.description}</div>
+                    )}
+                </div>
+            </div>
+        </label>
+    );
+
+    return (
+        <div className="component_settingspage sticky">
+            <form>
+                <FormBuilder
+                    form={form}
+                    onChange={onChange}
+                    render={renderForm} />
             </form>
-        );
-    }
+        </div>
+    );
 }

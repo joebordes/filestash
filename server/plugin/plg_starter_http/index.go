@@ -11,19 +11,17 @@ import (
 func init() {
 	port := Config.Get("general.port").Int()
 
-	Hooks.Register.Starter(func (r *mux.Router) {
+	Hooks.Register.Starter(func(r *mux.Router) {
 		Log.Info("[http] starting ...")
 		srv := &http.Server{
 			Addr:    fmt.Sprintf(":%d", port),
 			Handler: r,
 		}
 		go ensureAppHasBooted(fmt.Sprintf("http://127.0.0.1:%d/about", port), fmt.Sprintf("[http] listening on :%d", port))
-		go func() {
-			if err := srv.ListenAndServe(); err != nil {
-				Log.Error("error: %v", err)
-				return
-			}
-		}()
+		if err := srv.ListenAndServe(); err != nil {
+			Log.Error("error: %v", err)
+			return
+		}
 	})
 }
 

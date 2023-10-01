@@ -5,26 +5,25 @@ import (
 	. "github.com/mickael-kerjean/filestash/server/common"
 	"net/http"
 	"os"
-	"path/filepath"
 )
 
-func ReportHandler(ctx App, res http.ResponseWriter, req *http.Request) {
-	// This function is quite dumb but that's only because the reporting logic is called before
-	// this function is called.
+func ReportHandler(ctx *App, res http.ResponseWriter, req *http.Request) {
+	// This function is quite dumb indeed, the goal is to show a report trace in the logs
 	SendSuccessResult(res, nil)
 }
 
-func WellKnownSecurityHandler(ctx App, res http.ResponseWriter, req *http.Request) {
+func WellKnownSecurityHandler(ctx *App, res http.ResponseWriter, req *http.Request) {
 	res.WriteHeader(http.StatusOK)
 	res.Write([]byte("# If you would like to report a security issue\n"))
 	res.Write([]byte("# you may report it to me via email\n"))
-	res.Write([]byte("Contact: mickael@kerjean.me"))
+	res.Write([]byte("Contact: support@filestash.app\n"))
 }
 
-func HealthHandler(ctx App, res http.ResponseWriter, req *http.Request) {
+func HealthHandler(ctx *App, res http.ResponseWriter, req *http.Request) {
+	res.Header().Set("Access-Control-Allow-Origin", "*")
 	// CHECK 1: open the config file
 	file, err := os.OpenFile(
-		filepath.Join(GetCurrentDir(), CONFIG_PATH, "config.json"),
+		GetAbsolutePath(CONFIG_PATH, "config.json"),
 		os.O_RDWR, os.ModePerm,
 	)
 	if err != nil {
@@ -35,7 +34,7 @@ func HealthHandler(ctx App, res http.ResponseWriter, req *http.Request) {
 	defer file.Close()
 
 	// CHECK2: read from the filesystem
-    if _, err := file.Read(make([]byte, 10)); err != nil {
+	if _, err := file.Read(make([]byte, 10)); err != nil {
 		res.WriteHeader(http.StatusInternalServerError)
 		res.Write([]byte(`{"status": "error", "reason": "fs read error"}`))
 		return
@@ -50,19 +49,22 @@ func HealthHandler(ctx App, res http.ResponseWriter, req *http.Request) {
 
 	// CHECK4: about page
 	r, err := http.Get(fmt.Sprintf(
-		"http://127.0.0.1:%d/about",
+		"%s://127.0.0.1:%d/about",
+		func() string {
+			if req.TLS == nil {
+				return "http"
+			}
+			return "https"
+		}(),
 		Config.Get("general.port").Int(),
 	))
-	if err != nil {
-		res.WriteHeader(http.StatusInternalServerError)
-		res.Write([]byte(`{"status": "error", "reason": "endpoint error"}`))
-		return
-	}
-	r.Body.Close()
-	if r.StatusCode != http.StatusOK {
-		res.WriteHeader(http.StatusInternalServerError)
-		res.Write([]byte(`{"status": "error", "reason": "endpoint error"}`))
-		return
+	if err == nil {
+		r.Body.Close()
+		if r.StatusCode != http.StatusOK {
+			res.WriteHeader(http.StatusInternalServerError)
+			res.Write([]byte(`{"status": "error", "reason": "endpoint error"}`))
+			return
+		}
 	}
 
 	// SUCCESS!!

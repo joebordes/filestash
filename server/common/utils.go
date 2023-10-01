@@ -3,8 +3,10 @@ package common
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/ioutil"
+	"strconv"
 )
 
 func NewBool(t bool) *bool {
@@ -24,8 +26,10 @@ func NewInt(t int) *int {
 
 func NewBoolFromInterface(val interface{}) bool {
 	switch val.(type) {
-	case bool: return val.(bool)
-	default: return false
+	case bool:
+		return val.(bool)
+	default:
+		return false
 	}
 }
 
@@ -37,7 +41,8 @@ func NewInt64pFromInterface(val interface{}) *int64 {
 	case float64:
 		v := int64(val.(float64))
 		return &v
-	default: return nil
+	default:
+		return nil
 	}
 }
 
@@ -46,16 +51,19 @@ func NewStringpFromInterface(val interface{}) *string {
 	case string:
 		v := val.(string)
 		return &v
-	default: return nil
+	default:
+		return nil
 	}
 }
 
 func NewStringFromInterface(val interface{}) string {
 	switch val.(type) {
 	case string:
-		v := val.(string)
-		return v
-	default: return ""
+		return val.(string)
+	case float64:
+		return fmt.Sprintf("%d", int64(val.(float64)))
+	default:
+		return ""
 	}
 }
 
@@ -75,4 +83,11 @@ func PrettyPrint(json_dirty []byte) []byte {
 	}
 	json_pretty.Write([]byte("\n"))
 	return json_pretty.Bytes()
+}
+
+func CookieName(idx int) string {
+	if idx == 0 {
+		return COOKIE_NAME_AUTH
+	}
+	return COOKIE_NAME_AUTH + strconv.Itoa(idx)
 }

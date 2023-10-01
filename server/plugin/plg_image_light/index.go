@@ -6,9 +6,8 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
-	"strings"
 	"strconv"
+	"strings"
 )
 
 const ImageCachePath = "data/cache/image/"
@@ -108,11 +107,11 @@ func init() {
 	}
 	image_caching()
 
-	cachePath := filepath.Join(GetCurrentDir(), ImageCachePath)
+	cachePath := GetAbsolutePath(ImageCachePath)
 	os.RemoveAll(cachePath)
 	os.MkdirAll(cachePath, os.ModePerm)
 
-	Hooks.Register.ProcessFileContentBeforeSend(func (reader io.ReadCloser, ctx *App, res *http.ResponseWriter, req *http.Request) (io.ReadCloser, error){
+	Hooks.Register.ProcessFileContentBeforeSend(func(reader io.ReadCloser, ctx *App, res *http.ResponseWriter, req *http.Request) (io.ReadCloser, error) {
 		if plugin_enable() == false {
 			return reader, nil
 		}
@@ -135,11 +134,11 @@ func init() {
 		/////////////////////////
 		// Specify transformation
 		transform := &Transform{
-			Input: GetAbsolutePath(ImageCachePath + "imagein_" + QuickString(10)),
-			Size:      thumb_size(),
-			Crop:      true,
-			Quality:   thumb_quality(),
-			Exif:      false,
+			Input:   GetAbsolutePath(ImageCachePath + "imagein_" + QuickString(10)),
+			Size:    thumb_size(),
+			Crop:    true,
+			Quality: thumb_quality(),
+			Exif:    false,
 		}
 		if query.Get("thumbnail") == "true" {
 			(*res).Header().Set("Cache-Control", fmt.Sprintf("max-age=%d", thumb_caching()))
@@ -172,12 +171,12 @@ func init() {
 		/////////////////////////
 		// Transcode RAW image
 		if IsRaw(mType) {
-		 	if ExtractPreview(transform) == nil {
+			if ExtractPreview(transform) == nil {
 				mType = "image/jpeg"
 				(*res).Header().Set("Content-Type", mType)
 			} else {
 				return reader, nil
-		 	}
+			}
 		}
 
 		/////////////////////////
@@ -191,9 +190,9 @@ func init() {
 }
 
 type Transform struct {
-	Input     string
-	Size      int
-	Crop      bool
-	Quality   int
-	Exif      bool
+	Input   string
+	Size    int
+	Crop    bool
+	Quality int
+	Exif    bool
 }

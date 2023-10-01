@@ -2,7 +2,6 @@ node_modules/
 dist/
 *_generated.go
 test/
-pkg/
 *.a
 *.o
 *.bin
@@ -16,3 +15,6 @@ package-lock.json
 *.swo
 .tern-port
 .tern-project.js
+*_test.go
+cover.*
+www

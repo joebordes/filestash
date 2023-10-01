@@ -1,130 +1,104 @@
-import React from 'react';
-import ReactCSSTransitionGroup from 'react-addons-css-transition-group';
+import React, { useState, useEffect } from "react";
 
-import './connectpage.scss';
-import { Session } from '../model/';
-import { Container, NgIf, NgShow, Loader, Notification, ErrorPage } from '../components/';
-import { ForkMe, PoweredByFilestash, RememberMe, Credentials, Form } from './connectpage/';
-import { cache, notify, urlParams } from '../helpers/';
+import "./connectpage.scss";
+import { Session } from "../model/";
+import { Container, NgShow, Loader, ErrorPage } from "../components/";
+import { ForkMe, PoweredByFilestash, Form } from "./connectpage/";
+import { cache, notify, urlParams, setup_cache_state } from "../helpers/";
 
-import { Alert } from '../components/';
+function ConnectPageComponent({ error, history }) {
+    const [isLoading, setIsLoading] = useState(true);
+    const _GET = urlParams();
 
-@ErrorPage
-export class ConnectPage extends React.Component {
-    constructor(props){
-        super(props);
-        this.state = {
-            credentials: {},
-            remember_me: window.localStorage.hasOwnProperty('credentials') ? true : false,
-            loading: true,
-            doing_a_third_party_login: false
-        };
-    }
-
-    componentDidMount(){
-        const urlData = urlParams();
-        const get_params = Object.keys(urlData);
-        if(get_params.length === 0){
-            return;
-        }else if(get_params.length === 1 && !!urlData["next"]){
-            return;
-        }
-
-        if(!urlData.type){
-            urlData.type = urlData.state;
-        }
-        this.setState({
-            doing_a_third_party_login: true,
-            loading: true
-        }, () => this.authenticate(urlData));
-    }
-
-    authenticate(params){
-        Session.authenticate(params)
-            .then(Session.currentUser)
+    const authenticate = (formData) => {
+        return Session.authenticate(formData)
+            .then(() => Session.currentUser())
             .then((user) => {
-                if(location.search.indexOf("?next=") === 0){
-                    location = urlParams()["next"];
+                if (formData["next"]) {
+                    location = formData["next"];
+                    return;
                 }
-                let url = '/files/';
-                let path = user.home;
-                if(path){
-                    path = path.replace(/^\/?(.*?)\/?$/, "$1");
-                    if(path !== ""){
-                        url += path + "/";
-                    }
+                let url = "/files/";
+                if (user["home"]) {
+                    user["home"] = user["home"].replace(/^\/?(.*?)\/?$/, "$1").trim();
+                    if (user["home"] !== "") url = `${url}${user["home"]}/`;
                 }
-                cache.destroy();
-                this.props.history.push(url);
-            })
-            .catch((err) => {
-                this.setState({loading: false});
-                notify.send(err, 'error');
+                cache.destroy().then(() => {
+                    setup_cache_state(user["backendID"])
+                    history.push(url);
+                }).catch((err) => error(err));
             });
-    }
+    };
 
-    onFormSubmit(data, credentials){
-        if('oauth2' in data){
-            this.setState({loading: true});
-            Session.oauth2(data.oauth2).then((url) => {
+    const onFormSubmit = (formData) => {
+        if ("middleware" in formData) {
+            setIsLoading(true);
+            Session.middleware(formData).then((url) => {
                 window.location.href = url;
-            });
+            }).catch((err) => error(err));
+            return;
+        } else if ("oauth2" in formData) {
+            setIsLoading(true);
+            Session.oauth2(formData["oauth2"], _GET["next"]).then((url) => {
+                window.location.href = url;
+            }).catch((err) => error(err));
             return;
         }
-        this.setState({
-            credentials: credentials,
-            loading: true
-        }, () => this.authenticate(data));
-    }
+        setIsLoading(true);
+        authenticate({ ..._GET, ...formData }).catch((err) => {
+            setIsLoading(false);
+            notify.send(err, "error");
+        });
+    };
 
-    setRemember(state){
-        this.setState({remember_me: state});
-    }
+    const onFormChangeLoadingState = (onOrOff) => {
+        // we might not want to update the UI when:
+        // 1. user came from oauth2/oidc request
+        // 2. user came from a form pointing to this page
+        if (_GET["state"]) return;
+        else if (_GET["type"]) return;
+        setIsLoading(onOrOff);
+    };
 
-    setCredentials(creds){
-        this.setState({credentials: creds});
-    }
-
-    setLoading(value){
-        if(this.state.doing_a_third_party_login !== true){
-            this.setState({loading: value});
+    useEffect(() => {
+        if (_GET["state"]) { // oauth2/oidc
+            const [type, next] = _GET["state"].split("::");
+            authenticate({
+                ..._GET,
+                next: next,
+                type: type,
+            }).catch((err) => error(err));
+        } else if (_GET["type"]) { // form using get
+            authenticate(_GET).catch((err) => error(err));
         }
-    }
+    }, []);
 
-    onError(err){
-        this.props.error(err);
-    }
-
-    render() {
-        return (
-            <div className="component_page_connect">
-              <NgIf cond={window.CONFIG["fork_button"]}>
-                <ForkMe repo="https://github.com/mickael-kerjean/filestash" />
-              </NgIf>
-              <Container maxWidth="565px">
-                <NgIf cond={this.state.loading === true}>
-                  <Loader/>
-                </NgIf>
-                <NgShow cond={this.state.loading === false}>
-                  <ReactCSSTransitionGroup transitionName="form" transitionLeave={false} transitionEnter={false} transitionAppear={true} transitionAppearTimeout={500}>
-                    <Form credentials={this.state.credentials}
-                          onLoadingChange={this.setLoading.bind(this)}
-                          onError={this.onError.bind(this)}
-                          onSubmit={this.onFormSubmit.bind(this)} />
-                  </ReactCSSTransitionGroup>
-                  <ReactCSSTransitionGroup transitionName="remember" transitionLeave={false} transitionEnter={false} transitionAppear={true} transitionAppearTimeout={5000}>
-                    <PoweredByFilestash />
-                    <RememberMe state={this.state.remember_me} onChange={this.setRemember.bind(this)}/>
-                  </ReactCSSTransitionGroup>
+    return (
+        <div className="component_page_connect">
+            { window.CONFIG["fork_button"] && <ForkMe /> }
+            <div style={{ paddingTop: `${_centerThis()}px` }} />
+            <Container maxWidth="565px">
+                { isLoading && <Loader /> }
+                <NgShow cond={!isLoading}>
+                    <Form onLoadingChange={onFormChangeLoadingState}
+                        onError={error}
+                        onSubmit={onFormSubmit} />
+                    { window.CONFIG["fork_button"] && <PoweredByFilestash /> }
                 </NgShow>
-                <NgIf cond={this.state.doing_a_third_party_login === false}>
-                  <Credentials remember_me={this.state.remember_me}
-                               onRememberMeChange={this.setRemember.bind(this)}
-                               onCredentialsFound={this.setCredentials.bind(this)}
-                               credentials={this.state.credentials} />
-                </NgIf>
-              </Container>
-            </div>
-        );
-    }
+            </Container>
+        </div>
+    );
 }
+
+const _centerThis = () => {
+    let size = 300;
+    const $screen = document.querySelector(".login-form");
+    if ($screen) size = $screen.offsetHeight;
+
+    size = Math.round((document.body.offsetHeight - size) / 2);
+    if (size < 0) return 0;
+    if (size > 150) return 150;
+    return size;
+};
+
+export const ConnectPage = ErrorPage(ConnectPageComponent);

@@ -1,40 +1,36 @@
-import React from "react";
-import "react-pdf/dist/Page/AnnotationLayer.css";
+import React, { useState } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
-pdfjs.GlobalWorkerOptions.workerSrc = "/assets/vendor/pdfjs/build/pdf.worker.min.js";
 
-export class PDFJSViewer extends React.Component {
-    state = {
-        numPages: 0,
-    }
+import "react-pdf/dist/esm/Page/AnnotationLayer.css";
+pdfjs.GlobalWorkerOptions.workerSrc = "/assets/vendor/node_modules/pdfjs-dist/build/pdf.worker.js";
 
-    onDocumentLoadSuccess({ numPages }) {
-        this.setState({ numPages });
-    }
+export function PDFJSViewer({ src }) {
+    const [numPages, setNumPages] = useState(0);
 
-    render(){
-        return (
-            <Document
-              file={this.props.src}
-              onLoadSuccess={this.onDocumentLoadSuccess.bind(this)}
-              options={{
-                  cMapUrl: "/assets/vendor/pdfjs/cmaps/",
-                  cMapPacked: true,
-              }}
-            >
-              {
+    return (
+        <Document
+            file={src}
+            onLoadSuccess={(d) => setNumPages(d["numPages"])}
+            options={{
+                cMapUrl: "/assets/vendor/node_modules/pdfjs-dist/cmaps/",
+                cMapPacked: true,
+            }}>
+            {
                 Array.from(
-                  new Array(this.state.numPages),
-                  (el, index) => (
-                    <Page
-                      key={`page_${index + 1}`}
-                      pageNumber={index + 1}
-                      width={ window.innerWidth > 850 ? 800 : Math.max(window.innerWidth - 50, 100) }
-                    />
-                  ),
+                    new Array(numPages),
+                    (el, index) => (
+                        <Page
+                            key={`page_${index + 1}`}
+                            pageNumber={index + 1}
+                            width={
+                                window.innerWidth > 850 ?
+                                    800 :
+                                    Math.max(window.innerWidth - 50, 100)
+                            }
+                        />
+                    ),
                 )
-              }
-            </Document>
-        );
-    }
+            }
+        </Document>
+    );
 }

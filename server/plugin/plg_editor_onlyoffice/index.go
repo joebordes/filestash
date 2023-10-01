@@ -22,13 +22,13 @@ import (
 
 var (
 	SECRET_KEY_DERIVATE_FOR_ONLYOFFICE string
-	OnlyOfficeCache *cache.Cache
+	OnlyOfficeCache                    *cache.Cache
 )
 
 type OnlyOfficeCacheData struct {
 	Path string
 	Save func(path string, file io.Reader) error
-	Cat func(path string) (io.ReadCloser, error)
+	Cat  func(path string) (io.ReadCloser, error)
 }
 
 func init() {
@@ -39,7 +39,7 @@ func init() {
 			}
 			f.Name = "enable"
 			f.Type = "enable"
-			f.Target = []string{"onlyoffice_server"}
+			f.Target = []string{"onlyoffice_server", "onlyoffice_can_download"}
 			f.Description = "Enable/Disable the office suite to manage word, excel and powerpoint documents. This setting requires a restart to comes into effect"
 			f.Default = false
 			if u := os.Getenv("ONLYOFFICE_URL"); u != "" {
@@ -56,7 +56,7 @@ func init() {
 		f.Name = "onlyoffice_server"
 		f.Type = "text"
 		f.Description = "Location of your OnlyOffice server"
-		f.Default = ""
+		f.Default = "http://127.0.0.1:8080"
 		f.Placeholder = "Eg: http://127.0.0.1:8080"
 		if u := os.Getenv("ONLYOFFICE_URL"); u != "" {
 			f.Default = u
@@ -64,12 +64,23 @@ func init() {
 		}
 		return f
 	})
+	Config.Get("features.office.can_download").Schema(func(f *FormElement) *FormElement {
+		if f == nil {
+			f = &FormElement{}
+		}
+		f.Id = "onlyoffice_can_download"
+		f.Name = "can_download"
+		f.Type = "boolean"
+		f.Description = "Display Download button in onlyoffice"
+		f.Default = true
+		return f
+	})
 
 	if plugin_enable == false {
 		return
 	}
 
-	SECRET_KEY_DERIVATE_FOR_ONLYOFFICE = Hash("ONLYOFFICE_" + SECRET_KEY, len(SECRET_KEY))
+	SECRET_KEY_DERIVATE_FOR_ONLYOFFICE = Hash("ONLYOFFICE_"+SECRET_KEY, len(SECRET_KEY))
 	Hooks.Register.HttpEndpoint(func(r *mux.Router, app *App) error {
 		oods := r.PathPrefix("/onlyoffice").Subrouter()
 		oods.PathPrefix("/static/").HandlerFunc(StaticHandler).Methods("GET", "POST")
@@ -77,10 +88,10 @@ func init() {
 		oods.HandleFunc("/content", FetchContentHandler).Methods("GET")
 
 		r.HandleFunc(
-			COOKIE_PATH + "onlyoffice/iframe",
+			COOKIE_PATH+"onlyoffice/iframe",
 			NewMiddlewareChain(
 				IframeContentHandler,
-				[]Middleware{ SessionStart, LoggedInOnly },
+				[]Middleware{SessionStart, LoggedInOnly},
 				*app,
 			),
 		).Methods("GET")
@@ -105,7 +116,7 @@ func StaticHandler(res http.ResponseWriter, req *http.Request) {
 		SendErrorResult(res, err)
 		return
 	}
-	req.Header.Set("X-Forwarded-Host", req.Host + "/onlyoffice/static")
+	req.Header.Set("X-Forwarded-Host", req.Host+"/onlyoffice/static")
 	req.Header.Set("X-Forwarded-Proto", func() string {
 		if scheme := req.Header.Get("X-Forwarded-Proto"); scheme != "" {
 			return scheme
@@ -146,8 +157,8 @@ func StaticHandler(res http.ResponseWriter, req *http.Request) {
 	reverseProxy.ServeHTTP(res, req)
 }
 
-func IframeContentHandler(ctx App, res http.ResponseWriter, req *http.Request) {
-	if model.CanRead(&ctx) == false {
+func IframeContentHandler(ctx *App, res http.ResponseWriter, req *http.Request) {
+	if model.CanRead(ctx) == false {
 		SendErrorResult(res, ErrPermissionDenied)
 		return
 	} else if oodsLocation := Config.Get("features.office.onlyoffice_server").String(); oodsLocation == "" {
@@ -158,17 +169,17 @@ func IframeContentHandler(ctx App, res http.ResponseWriter, req *http.Request) {
 	}
 
 	var (
-		path string                     // path of the file we want to open via onlyoffice
-		filestashServerLocation string  // location from which the oods server can reach filestash
-		userId string                   // as seen by onlyoffice to distinguish different users
-		username string                 // username as displayed by only office
-		key string                      // unique identifier for a file as seen be only office
-		contentType string              // name of the application in onlyoffice
-		filetype string                 // extension of the document
-		filename string                 // filename of the document
-		oodsMode string                 // edit mode
-		oodsDevice string               // mobile, desktop of embedded
-		localip string
+		path                    string // path of the file we want to open via onlyoffice
+		filestashServerLocation string // location from which the oods server can reach filestash
+		userId                  string // as seen by onlyoffice to distinguish different users
+		username                string // username as displayed by only office
+		key                     string // unique identifier for a file as seen be only office
+		contentType             string // name of the application in onlyoffice
+		filetype                string // extension of the document
+		filename                string // filename of the document
+		oodsMode                string // edit mode
+		oodsDevice              string // mobile, desktop of embedded
+		localip                 string
 	)
 	query := req.URL.Query()
 	path, err := ctrl.PathBuilder(ctx, query.Get("path"))
@@ -177,18 +188,18 @@ func IframeContentHandler(ctx App, res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	userId = GenerateID(&ctx)
+	userId = GenerateID(ctx)
 	f, err := ctx.Backend.Cat(path)
 	if err != nil {
 		SendErrorResult(res, err)
 		return
 	}
 	key = HashStream(f, 20)
-	key = Hash(key + userId + path, 20)
+	key = Hash(key+userId+path, 20)
 
 	filename = filepath.Base(path)
 	oodsMode = func() string {
-		if model.CanEdit(&ctx) == false {
+		if model.CanEdit(ctx) == false {
 			return "view"
 		}
 		return "edit"
@@ -227,37 +238,73 @@ func IframeContentHandler(ctx App, res http.ResponseWriter, req *http.Request) {
 		if err != nil {
 			return ""
 		}
+
+		maybeips := []string{}
 		for _, address := range addrs {
 			if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
 				if ipnet.IP.To4() != nil {
-					return ipnet.IP.String()
+					maybeips = append(maybeips, ipnet.IP.String())
 				}
 			}
 		}
-		return ""
+
+		// if there is just one interface, we can just pick that one
+		if len(maybeips) == 1 {
+			return maybeips[0]
+		}
+
+		// if not, fallback to capturing our outgoing local ip
+		conn, err := net.Dial("udp", "8.8.8.8:80")
+		if err != nil {
+			return ""
+		}
+		defer conn.Close()
+
+		localAddr := conn.LocalAddr().(*net.UDPAddr)
+
+		return localAddr.IP.String()
 	}()
-	filestashServerLocation = fmt.Sprintf("http://%s:%d", localip, Config.Get("general.port").Int())
+	filestashServerLocation = fmt.Sprintf(
+		"%s://%s:%d",
+		func() string { // proto
+			if req.TLS == nil {
+				return "http"
+			}
+			return "https"
+		}(),
+		localip,
+		Config.Get("general.port").Int(),
+	)
 	contentType = func(p string) string {
 		var (
-			word string = "text"
-			excel string = "spreadsheet"
+			word       string = "text"
+			excel      string = "spreadsheet"
 			powerpoint string = "presentation"
 		)
 		switch GetMimeType(p) {
-		case "application/word": return word
-		case "application/msword": return word
-		case "application/vnd.oasis.opendocument.text": return word
-		case "application/vnd.oasis.opendocument.spreadsheet": return excel
-		case "application/excel": return excel
-		case "application/vnd.ms-excel": return excel
-		case "application/powerpoint": return powerpoint
-		case "application/vnd.ms-powerpoint": return powerpoint
-		case "application/vnd.oasis.opendocument.presentation": return powerpoint
+		case "application/word":
+			return word
+		case "application/msword":
+			return word
+		case "application/vnd.oasis.opendocument.text":
+			return word
+		case "application/vnd.oasis.opendocument.spreadsheet":
+			return excel
+		case "application/excel":
+			return excel
+		case "application/vnd.ms-excel":
+			return excel
+		case "application/powerpoint":
+			return powerpoint
+		case "application/vnd.ms-powerpoint":
+			return powerpoint
+		case "application/vnd.oasis.opendocument.presentation":
+			return powerpoint
 		}
 		return ""
 	}(path)
 	filetype = strings.TrimPrefix(filepath.Ext(filename), ".")
-	OnlyOfficeCache.Set(key, &OnlyOfficeCacheData{ path, ctx.Backend.Save, ctx.Backend.Cat }, cache.DefaultExpiration)
+	OnlyOfficeCache.Set(key, &OnlyOfficeCacheData{path, ctx.Backend.Save, ctx.Backend.Cat}, cache.DefaultExpiration)
 	res.Write([]byte(fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en">
   <head>
@@ -282,7 +329,10 @@ func IframeContentHandler(ctx App, res http.ResponseWriter, req *http.Request) {
                   "title": "%s",
                   "url": "%s/onlyoffice/content?key=%s",
                   "fileType": "%s",
-                  "key": "%s"
+                  "key": "%s",
+                  "permissions": {
+                      "download": %s
+                  }
               },
               "editorConfig": {
                   "callbackUrl": "%s/onlyoffice/event",
@@ -314,6 +364,12 @@ func IframeContentHandler(ctx App, res http.ResponseWriter, req *http.Request) {
 		filestashServerLocation, key,
 		filetype,
 		key,
+		func() string {
+			if Config.Get("features.office.can_download").Bool() {
+				return "true"
+			}
+			return "false"
+		}(),
 		filestashServerLocation,
 		oodsMode,
 		userId,
@@ -351,39 +407,40 @@ func FetchContentHandler(res http.ResponseWriter, req *http.Request) {
 
 type OnlyOfficeEventObject struct {
 	Actions []struct {
-		Type   int           `json: "type"`
-		UserId string        `json: "userid" `
-	}                        `json: "actions"`
-	ChangesURL string        `json: "changesurl"`
-	Forcesavetype int        `json: "forcesavetype"`
-	History struct {
+		Type   int    `json: "type"`
+		UserId string `json: "userid" `
+	} `json: "actions"`
+	ChangesURL    string `json: "changesurl"`
+	Forcesavetype int    `json: "forcesavetype"`
+	History       struct {
 		ServerVersion string `json: "serverVersion"`
-		Changes []struct {
-			Created string   `json: "created"`
-			User struct {
-				Id   string  `json: "id"`
-				Name string  `json: "name"`
+		Changes       []struct {
+			Created string `json: "created"`
+			User    struct {
+				Id   string `json: "id"`
+				Name string `json: "name"`
 			}
-		}                    `json: "changes"`
-	}                        `json: "history"`
-	Key      string          `json: "key"`
-	Status   int             `json: "status"`
-	Url      string          `json: "url"`
-	UserData string          `json: "userdata"`
-	Lastsave string          `json: "lastsave"`
-	Users    []string        `json: "users"`
+		} `json: "changes"`
+	} `json: "history"`
+	Key      string   `json: "key"`
+	Status   int      `json: "status"`
+	Url      string   `json: "url"`
+	UserData string   `json: "userdata"`
+	Lastsave string   `json: "lastsave"`
+	Users    []string `json: "users"`
 }
 
 func OnlyOfficeEventHandler(res http.ResponseWriter, req *http.Request) {
 	event := OnlyOfficeEventObject{}
 	if err := json.NewDecoder(req.Body).Decode(&event); err != nil {
 		SendErrorResult(res, err)
-        return
-    }
+		return
+	}
 	req.Body.Close()
 
 	switch event.Status {
-	case 0: Log.Warning("[onlyoffice] no document with the key identifier could be found. %+v", event)
+	case 0:
+		Log.Warning("[onlyoffice] no document with the key identifier could be found. %+v", event)
 	case 1:
 		// document is being edited
 	case 2:
@@ -396,7 +453,7 @@ func OnlyOfficeEventHandler(res http.ResponseWriter, req *http.Request) {
 	case 5:
 		Log.Warning("[onlyoffice] undocumented status. %+v", event)
 	case 6: // document is being edited, but the current document state is saved
-		saveObject, found := OnlyOfficeCache.Get(event.Key);
+		saveObject, found := OnlyOfficeCache.Get(event.Key)
 		if found == false {
 			res.WriteHeader(http.StatusInternalServerError)
 			res.Write([]byte(`{"error": 1, "message": "doens't know where to store the given data"}`))
@@ -422,8 +479,10 @@ func OnlyOfficeEventHandler(res http.ResponseWriter, req *http.Request) {
 			return
 		}
 		f.Body.Close()
-	case 7: Log.Warning("[onlyoffice] error has occurred while force saving the document. %+v", event)
-	default: Log.Warning("[onlyoffice] undocumented status. %+v", event)
+	case 7:
+		Log.Warning("[onlyoffice] error has occurred while force saving the document. %+v", event)
+	default:
+		Log.Warning("[onlyoffice] undocumented status. %+v", event)
 	}
 	res.Write([]byte(`{"error": 0}`))
 }

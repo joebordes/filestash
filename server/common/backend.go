@@ -40,31 +40,40 @@ func (d *Driver) Drivers() map[string]IBackend {
 	return d.ds
 }
 
-type Nothing struct {}
+type Nothing struct{}
+
 func (b Nothing) Init(params map[string]string, app *App) (IBackend, error) {
-	return &Nothing{}, nil
+	return &b, nil
 }
 func (b Nothing) Ls(path string) ([]os.FileInfo, error) {
-	return nil, NewError("", 401)
+	return []os.FileInfo{}, nil
 }
 func (b Nothing) Cat(path string) (io.ReadCloser, error) {
-	return NewReadCloserFromReader(strings.NewReader("")), NewError("", 401)
+	return NewReadCloserFromReader(strings.NewReader("")), ErrNotImplemented
 }
 func (b Nothing) Mkdir(path string) error {
-	return NewError("", 401)
+	return ErrNotImplemented
 }
 func (b Nothing) Rm(path string) error {
-	return NewError("", 401)
+	return ErrNotImplemented
 }
 func (b Nothing) Mv(from string, to string) error {
-	return NewError("", 401)
+	return ErrNotImplemented
 }
 func (b Nothing) Touch(path string) error {
-	return NewError("", 401)
+	return ErrNotImplemented
 }
 func (b Nothing) Save(path string, file io.Reader) error {
-	return NewError("", 401)
+	return ErrNotImplemented
 }
 func (b Nothing) LoginForm() Form {
-	return Form{}
+	return Form{
+		Elmnts: []FormElement{
+			{
+				Name:  "type",
+				Type:  "hidden",
+				Value: "nothing",
+			},
+		},
+	}
 }

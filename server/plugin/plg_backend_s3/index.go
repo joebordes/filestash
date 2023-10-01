@@ -1,27 +1,36 @@
 package plg_backend_s3
 
 import (
+	"context"
 	"fmt"
-	"io"
-	"os"
-	"path/filepath"
-	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/credentials/ec2rolecreds"
+	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
+	"github.com/aws/aws-sdk-go/aws/ec2metadata"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	"github.com/aws/aws-sdk-go/service/sts"
 	. "github.com/mickael-kerjean/filestash/server/common"
+
+	"io"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
 )
 
 var S3Cache AppCache
 
 type S3Backend struct {
-	client *s3.S3
-	config *aws.Config
-	params map[string]string
+	client  *s3.S3
+	config  *aws.Config
+	params  map[string]string
+	context context.Context
 }
 
 func init() {
@@ -36,19 +45,48 @@ func (s S3Backend) Init(params map[string]string, app *App) (IBackend, error) {
 
 	if params["region"] == "" {
 		params["region"] = "us-east-2"
+		if strings.HasSuffix(params["endpoint"], ".cloudflarestorage.com") {
+			params["region"] = "auto"
+		}
 	}
+	creds := []credentials.Provider{}
+	if params["access_key_id"] != "" || params["secret_access_key"] != "" {
+		creds = append(creds, &credentials.StaticProvider{Value: credentials.Value{
+			AccessKeyID:     params["access_key_id"],
+			SecretAccessKey: params["secret_access_key"],
+			SessionToken:    params["session_token"],
+		}})
+	}
+
+	if params["role_arn"] != "" {
+		sessOptions := session.Options{Config: aws.Config{Region: aws.String(params["region"])}}
+		creds = append(creds, &stscreds.AssumeRoleProvider{
+			Client:   sts.New(session.Must(session.NewSessionWithOptions(sessOptions))),
+			RoleARN:  params["role_arn"],
+			Duration: stscreds.DefaultDuration,
+		})
+	}
+
+	creds = append(
+		creds,
+		&ec2rolecreds.EC2RoleProvider{Client: ec2metadata.New(session.Must(session.NewSession()))},
+		&credentials.EnvProvider{},
+	)
 	config := &aws.Config{
-		Credentials:      credentials.NewStaticCredentials(params["access_key_id"], params["secret_access_key"], params["session_token"]),
-		S3ForcePathStyle: aws.Bool(true),
-		Region:           aws.String(params["region"]),
+		Credentials:                   credentials.NewChainCredentials(creds),
+		CredentialsChainVerboseErrors: aws.Bool(true),
+		S3ForcePathStyle:              aws.Bool(true),
+		Region:                        aws.String(params["region"]),
 	}
 	if params["endpoint"] != "" {
 		config.Endpoint = aws.String(params["endpoint"])
 	}
+
 	backend := &S3Backend{
-		config: config,
-		params: params,
-		client: s3.New(session.New(config)),
+		config:  config,
+		params:  params,
+		client:  s3.New(session.New(config)),
+		context: app.Context,
 	}
 	return backend, nil
 }
@@ -68,14 +106,20 @@ func (s S3Backend) LoginForm() Form {
 			},
 			FormElement{
 				Name:        "secret_access_key",
-				Type:        "text",
+				Type:        "password",
 				Placeholder: "Secret Access Key*",
 			},
 			FormElement{
 				Name:        "advanced",
 				Type:        "enable",
 				Placeholder: "Advanced",
-				Target:      []string{"s3_path", "s3_session_token", "s3_encryption_key", "s3_region", "s3_endpoint"},
+				Target:      []string{"s3_role_arn", "s3_path", "s3_session_token", "s3_encryption_key", "s3_region", "s3_endpoint"},
+			},
+			FormElement{
+				Id:          "s3_role_arn",
+				Name:        "role_arn",
+				Type:        "text",
+				Placeholder: "Role ARN",
 			},
 			FormElement{
 				Id:          "s3_session_token",
@@ -144,7 +188,9 @@ func (s S3Backend) Ls(path string) (files []os.FileInfo, err error) {
 	}
 	client := s3.New(s.createSession(p.bucket))
 
-	err = client.ListObjectsV2Pages(
+	startTime := time.Now()
+	err = client.ListObjectsV2PagesWithContext(
+		s.context,
 		&s3.ListObjectsV2Input{
 			Bucket:    aws.String(p.bucket),
 			Prefix:    aws.String(p.path),
@@ -168,9 +214,13 @@ func (s S3Backend) Ls(path string) (files []os.FileInfo, err error) {
 					FType: "directory",
 				})
 			}
-			return true
-		})
 
+			if time.Since(startTime) > ls_timeout() {
+				Log.Debug("plg_backend_s3::ls timeout triggered after getting %d files", len(files))
+				return false
+			}
+			return aws.BoolValue(objs.IsTruncated)
+		})
 	return files, err
 }
 
@@ -237,32 +287,36 @@ func (s S3Backend) Rm(path string) error {
 		})
 		return err
 	}
-
-	objs, err := client.ListObjects(&s3.ListObjectsInput{
-		Bucket:    aws.String(p.bucket),
-		Prefix:    aws.String(p.path),
-		Delimiter: aws.String("/"),
-	})
-	if err != nil {
-		return err
-	}
-	for _, obj := range objs.Contents {
-		_, err := client.DeleteObject(&s3.DeleteObjectInput{
-			Bucket: aws.String(p.bucket),
-			Key:    obj.Key,
+	for {
+		objs, err := client.ListObjects(&s3.ListObjectsInput{
+			Bucket:    aws.String(p.bucket),
+			Prefix:    aws.String(p.path),
+			Delimiter: aws.String("/"),
 		})
 		if err != nil {
 			return err
 		}
-	}
-	for _, pref := range objs.CommonPrefixes {
-		s.Rm("/" + p.bucket + "/" + *pref.Prefix)
-		_, err := client.DeleteObject(&s3.DeleteObjectInput{
-			Bucket: aws.String(p.bucket),
-			Key:    pref.Prefix,
-		})
-		if err != nil {
-			return err
+		for _, obj := range objs.Contents {
+			_, err := client.DeleteObject(&s3.DeleteObjectInput{
+				Bucket: aws.String(p.bucket),
+				Key:    obj.Key,
+			})
+			if err != nil {
+				return err
+			}
+		}
+		for _, pref := range objs.CommonPrefixes {
+			s.Rm("/" + p.bucket + "/" + *pref.Prefix)
+			_, err := client.DeleteObject(&s3.DeleteObjectInput{
+				Bucket: aws.String(p.bucket),
+				Key:    pref.Prefix,
+			})
+			if err != nil {
+				return err
+			}
+		}
+		if !aws.BoolValue(objs.IsTruncated) {
+			break
 		}
 	}
 
@@ -272,7 +326,7 @@ func (s S3Backend) Rm(path string) error {
 		})
 		return err
 	}
-	_, err = client.DeleteObject(&s3.DeleteObjectInput{
+	_, err := client.DeleteObject(&s3.DeleteObjectInput{
 		Bucket: aws.String(p.bucket),
 		Key:    aws.String(p.path),
 	})
@@ -282,29 +336,96 @@ func (s S3Backend) Rm(path string) error {
 func (s S3Backend) Mv(from string, to string) error {
 	f := s.path(from)
 	t := s.path(to)
+	if from == to {
+		return nil
+	}
 	client := s3.New(s.createSession(f.bucket))
 
-	if f.path == "" || strings.HasSuffix(from, "/") {
+	if f.path == "" { // Rename bucket
 		return ErrNotImplemented
-	}
+	} else if strings.HasSuffix(from, "/") == false { // Move Single file
+		input := &s3.CopyObjectInput{
+			Bucket:     aws.String(t.bucket),
+			CopySource: aws.String(fmt.Sprintf("%s/%s", f.bucket, s.urlEncodedPath(f.path))),
+			Key:        aws.String(t.path),
+		}
+		if s.params["encryption_key"] != "" {
+			input.CopySourceSSECustomerAlgorithm = aws.String("AES256")
+			input.CopySourceSSECustomerKey = aws.String(s.params["encryption_key"])
+			input.SSECustomerAlgorithm = aws.String("AES256")
+			input.SSECustomerKey = aws.String(s.params["encryption_key"])
+		}
 
-	input := &s3.CopyObjectInput{
-		Bucket:     aws.String(t.bucket),
-		CopySource: aws.String(f.bucket + "/" + f.path),
-		Key:        aws.String(t.path),
-	}
-	if s.params["encryption_key"] != "" {
-		input.CopySourceSSECustomerAlgorithm = aws.String("AES256")
-		input.CopySourceSSECustomerKey = aws.String(s.params["encryption_key"])
-		input.SSECustomerAlgorithm = aws.String("AES256")
-		input.SSECustomerKey = aws.String(s.params["encryption_key"])
-	}
-
-	_, err := client.CopyObject(input)
-	if err != nil {
+		_, err := client.CopyObject(input)
+		if err != nil {
+			return err
+		}
+		_, err = client.DeleteObject(&s3.DeleteObjectInput{
+			Bucket: aws.String(f.bucket),
+			Key:    aws.String(f.path),
+		})
 		return err
 	}
-	return s.Rm(from)
+	// Move recursively files and subfolders
+	err := client.ListObjectsV2Pages(
+		&s3.ListObjectsV2Input{
+			Bucket:    aws.String(f.bucket),
+			Prefix:    aws.String(f.path),
+			Delimiter: aws.String("/"),
+		},
+		func(objs *s3.ListObjectsV2Output, lastPage bool) bool {
+			for _, obj := range objs.Contents {
+				from := fmt.Sprintf("%s/%s", f.bucket, s.urlEncodedPath(*obj.Key))
+				toKey := t.path + strings.TrimPrefix(*obj.Key, f.path)
+				input := &s3.CopyObjectInput{
+					CopySource: aws.String(from),
+					Bucket:     aws.String(t.bucket),
+					Key:        aws.String(toKey),
+				}
+				if s.params["encryption_key"] != "" {
+					input.CopySourceSSECustomerAlgorithm = aws.String("AES256")
+					input.CopySourceSSECustomerKey = aws.String(s.params["encryption_key"])
+					input.SSECustomerAlgorithm = aws.String("AES256")
+					input.SSECustomerKey = aws.String(s.params["encryption_key"])
+				}
+
+				Log.Debug("CopyObject(%s, %s):", from, f.bucket+"/"+toKey)
+				_, err := client.CopyObject(input)
+				if err != nil {
+					Log.Error("CopyObject from: %s to: %s",
+						f.bucket+"/"+*obj.Key,
+						t.bucket+"/"+t.path+*obj.Key,
+						err)
+					return false
+				}
+
+				Log.Debug("DeleteObject(%s):", f.bucket+"/"+*obj.Key)
+				_, err = client.DeleteObject(&s3.DeleteObjectInput{
+					Bucket: aws.String(f.bucket),
+					Key:    obj.Key,
+				})
+				if err != nil {
+					Log.Error("DeleteObject failed: %s", *obj.Key, err)
+					return false
+				}
+			}
+			for _, pref := range objs.CommonPrefixes {
+				from := fmt.Sprintf("/%s/%s", f.bucket, *pref.Prefix)
+				to := fmt.Sprintf("/%s/%s/%s", t.bucket, t.path, strings.TrimPrefix(*pref.Prefix, f.path))
+				Log.Debug("Mv(%s, %s):", from, to)
+				err := s.Mv(from, to)
+				if err != nil {
+					Log.Error("Mv(%s, %s) failed:", from, to, err)
+					return false
+				}
+			}
+			return true
+		},
+	)
+	if err != nil {
+		Log.Error("ListObjectsV2Pages failed:", err)
+	}
+	return err
 }
 
 func (s S3Backend) Touch(path string) error {
@@ -335,7 +456,7 @@ func (s S3Backend) Save(path string, file io.Reader) error {
 	if p.bucket == "" {
 		return ErrNotValid
 	}
-	uploader := s3manager.NewUploader(s.createSession(path))
+	uploader := s3manager.NewUploader(s.createSession(p.bucket))
 	input := s3manager.UploadInput{
 		Body:   file,
 		Bucket: aws.String(p.bucket),
@@ -350,9 +471,11 @@ func (s S3Backend) Save(path string, file io.Reader) error {
 }
 
 func (s S3Backend) createSession(bucket string) *session.Session {
-	params := s.params
-	params["bucket"] = bucket
-	c := S3Cache.Get(params)
+	newParams := map[string]string{"bucket": bucket}
+	for k, v := range s.params {
+		newParams[k] = v
+	}
+	c := S3Cache.Get(newParams)
 	if c == nil {
 		res, err := s.client.GetBucketLocation(&s3.GetBucketLocationInput{
 			Bucket: aws.String(bucket),
@@ -366,7 +489,7 @@ func (s S3Backend) createSession(bucket string) *session.Session {
 				s.config.Region = res.LocationConstraint
 			}
 		}
-		S3Cache.Set(params, s.config.Region)
+		S3Cache.Set(newParams, s.config.Region)
 	} else {
 		s.config.Region = c.(*string)
 	}
@@ -395,4 +518,18 @@ func (s S3Backend) path(p string) S3Path {
 		bucket,
 		path,
 	}
+}
+
+func (s S3Backend) urlEncodedPath(path string) string {
+	sp := strings.Split(path, "/")
+
+	var pathElements []string
+	for _, x := range sp {
+		// Compatible with RFC 3986.
+		endoded := strings.Replace(url.QueryEscape(x), "+", "%20", -1)
+		pathElements = append(pathElements, endoded)
+	}
+
+	encodedPath := strings.Join(pathElements, "/")
+	return encodedPath
 }

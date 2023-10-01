@@ -9,16 +9,16 @@ import (
 	"strings"
 )
 
-func WebdavHandler(ctx App, res http.ResponseWriter, req *http.Request) {
+func WebdavHandler(ctx *App, res http.ResponseWriter, req *http.Request) {
 	if ctx.Share.Id == "" {
 		http.NotFound(res, req)
 		return
 	}
 
 	// https://github.com/golang/net/blob/master/webdav/webdav.go#L49-L68
-	canRead := model.CanRead(&ctx)
-	canWrite := model.CanRead(&ctx)
-	canUpload := model.CanUpload(&ctx)
+	canRead := model.CanRead(ctx)
+	canWrite := model.CanRead(ctx)
+	canUpload := model.CanUpload(ctx)
 	switch req.Method {
 	case "OPTIONS", "GET", "HEAD", "POST", "PROPFIND":
 		if canRead == false {
@@ -41,21 +41,20 @@ func WebdavHandler(ctx App, res http.ResponseWriter, req *http.Request) {
 	}
 
 	h := &webdav.Handler{
-		Prefix: "/s/" + ctx.Share.Id,
+		Prefix:     "/s/" + ctx.Share.Id,
 		FileSystem: model.NewWebdavFs(ctx.Backend, ctx.Share.Backend, ctx.Share.Path, req),
 		LockSystem: model.NewWebdavLock(),
 	}
 	h.ServeHTTP(res, req)
 }
 
-
 /*
  * OSX ask for a lot of crap while mounting as a network drive. To avoid wasting resources with such
  * an imbecile and considering we can't even see the source code they are running, the best approach we
  * could go on is: "crap in, crap out" where useless request coming in are identified and answer appropriatly
  */
-func WebdavBlacklist (fn func(App, http.ResponseWriter, *http.Request)) func(ctx App, res http.ResponseWriter, req *http.Request) {
-	return func(ctx App, res http.ResponseWriter, req *http.Request) {
+func WebdavBlacklist(fn func(*App, http.ResponseWriter, *http.Request)) func(ctx *App, res http.ResponseWriter, req *http.Request) {
+	return func(ctx *App, res http.ResponseWriter, req *http.Request) {
 		base := filepath.Base(req.URL.String())
 
 		if req.Method == "PUT" || req.Method == "MKCOL" {
